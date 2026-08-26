@@ -10,14 +10,27 @@ Secrets.
 
 ## Daylight Saving Time
 
-GitHub Actions cron schedules are UTC-only and do not auto-adjust for DST. The workflow is set
-for **00:01 AM Central Daylight Time (CDT, UTC-5)**. When Central time changes:
+GitHub Actions cron schedules are UTC-only and do not auto-adjust for DST. The workflow has
+**two** scheduled triggers (00:01 and 00:03 AM Central — see "Two scheduled triggers" below),
+both currently set for **Central Daylight Time (CDT, UTC-5)**. When Central time changes, both
+lines need the same edit:
 
 - **Fall back to CST (UTC-6)**, typically early November: edit `.github/workflows/nightly.yml`,
-  change `cron: "1 5 * * *"` to `cron: "1 6 * * *"`.
-- **Spring forward to CDT (UTC-5)**, typically mid-March: change it back to `"1 5 * * *"`.
+  change both `cron: "1 5 * * *"` → `"1 6 * * *"` and `cron: "3 5 * * *"` → `"3 6 * * *"`.
+- **Spring forward to CDT (UTC-5)**, typically mid-March: change both back to `"1 5 * * *"` and
+  `"3 5 * * *"`.
 
 Commit and push the change — no other steps needed.
+
+## Two scheduled triggers
+
+GitHub documents that scheduled workflows can be delayed, and calls out the top of the hour as
+the worst-case congestion window — exactly where a 00:01 AM trigger sits. So the workflow fires
+twice, two minutes apart (00:01 and 00:03 Central), as a safety net. This is safe: the script
+skips any booking already marked `"success"`, so if the first trigger ran fine, the second is a
+harmless no-op. It only does real work if the first one got delayed or dropped — which is exactly
+what happened the first night this went live (00:01 didn't fire for ~18 minutes; a manual trigger
+was used that night before this backup schedule existed).
 
 ## Testing
 

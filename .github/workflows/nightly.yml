@@ -2,11 +2,20 @@ name: Nightly library booking check
 
 on:
   schedule:
-    # 00:01 AM Central time. GitHub Actions cron is UTC-only and does not auto-adjust for
-    # Daylight Saving Time. This is currently set for CDT (UTC-5). When Central time switches
-    # to CST (typically early November) or back to CDT (typically mid-March), update the "5"
-    # below to "6" (CST) or back to "5" (CDT) — see README.md for the full explanation.
+    # 00:01 AM and 00:03 AM Central time. Two triggers, two minutes apart, because GitHub
+    # explicitly documents that scheduled workflows can be delayed — and the top of the hour
+    # (:00/:01) is their worst-case congestion window, since that's when the most cron jobs
+    # across all of GitHub fire at once. The 00:01 run is the primary attempt; 00:03 is a safety
+    # net. This is safe to run twice: the script skips anything already marked "success", so a
+    # second on-time trigger is a harmless no-op, and a second trigger only does real work if
+    # the first one got delayed or dropped.
+    #
+    # GitHub Actions cron is UTC-only and does not auto-adjust for Daylight Saving Time. Both
+    # lines below are currently set for CDT (UTC-5). When Central time switches to CST
+    # (typically early November) or back to CDT (typically mid-March), update the "5" in BOTH
+    # lines to "6" (CST) or back to "5" (CDT) — see README.md for the full explanation.
     - cron: "1 5 * * *"
+    - cron: "3 5 * * *"
   workflow_dispatch: {}  # allows manually triggering a run from the Actions tab, for testing
 
 concurrency:
