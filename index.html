@@ -1,0 +1,298 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Walker Library Booking</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; }
+  fieldset.row { display: none; position: relative; margin-bottom: 24px; padding: 16px; border-radius: 8px; border: 1px solid #ccc; scroll-margin-top: 20px; transition: border-color 0.2s, box-shadow 0.2s; }
+  fieldset.row.target, fieldset.row.expanded { display: block; }
+  fieldset.row.target { border-color: #b3261e; box-shadow: 0 0 0 3px rgba(179,38,30,0.12); }
+  label { display: block; margin: 10px 0 4px; font-size: 0.9rem; color: #444; }
+  input { width: 100%; padding: 8px; box-sizing: border-box; font-size: 1rem; border: 1px solid #bbb; border-radius: 6px; }
+  .status-line { font-size: 0.85rem; color: #555; margin-bottom: 12px; }
+  .note { margin-top: 4px; font-style: italic; }
+  button { background: #b3261e; color: white; border: none; padding: 12px 20px; font-size: 1rem; border-radius: 6px; cursor: pointer; }
+  .remove-btn { position: absolute; top: 12px; right: 12px; background: none; color: #b3261e; border: 1px solid #b3261e; padding: 4px 10px; font-size: 0.8rem; }
+  .add-btn { background: #1b6ef3; color: white; border: 1px solid #1b6ef3; width: 100%; margin-bottom: 24px; font-weight: 600; }
+  .add-btn:hover { background: #1558c9; }
+  .flash { background: #e6f4ea; color: #1b7f3a; padding: 12px; border-radius: 6px; margin-bottom: 20px; }
+  .error-flash { background: #fbe9e7; color: #b3261e; padding: 12px; border-radius: 6px; margin-bottom: 20px; }
+  .sched-row { display: flex; align-items: center; gap: 12px; padding: 10px 4px; border-bottom: 1px solid #eee; font-size: 0.9rem; text-decoration: none; color: inherit; border-radius: 6px; cursor: pointer; }
+  .sched-row:hover { background: #f7f2ee; }
+  .sched-row.past { opacity: 0.45; }
+  .edit-hint { font-style: normal; font-size: 0.8rem; color: #999; flex-shrink: 0; }
+  .delete-hint { font-size: 0.8rem; color: #b3261e; flex-shrink: 0; padding: 4px 8px; border: 1px solid #b3261e; border-radius: 6px; }
+  .delete-hint:hover { background: #fbe9e7; }
+  .duplicate-hint { font-size: 0.8rem; color: #1b6ef3; flex-shrink: 0; padding: 4px 8px; border: 1px solid #1b6ef3; border-radius: 6px; }
+  .duplicate-hint:hover { background: #e8f0fe; }
+  .sched-date { font-weight: 600; width: 100px; flex-shrink: 0; }
+  .sched-detail { flex: 1; color: #333; }
+  .sched-status { font-weight: 600; text-transform: uppercase; font-size: 0.75rem; }
+  .timing { font-size: 0.8rem; color: #777; margin-top: 2px; }
+  .edit-bookings-hint { font-size: 0.85rem; color: #777; margin-bottom: 16px; }
+  .loading { color: #777; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+  <h1>Walker Library Booking</h1>
+  <p style="color:#666; font-size:0.9rem;">Bookings run automatically every night via GitHub Actions. Library card/PIN are
+  not stored here — they live only in GitHub Secrets.</p>
+  <div id="flash"></div>
+
+  <h2>Schedule</h2>
+  <div id="schedule" class="loading">Loading…</div>
+
+  <h2>Edit bookings</h2>
+  <p class="edit-bookings-hint">Click "edit ›" on an entry above to open it here, or use "+ Add another booking" below.</p>
+  <form id="booking-form" onsubmit="return false;">
+    <div id="rows"></div>
+    <button type="button" class="add-btn" id="add-row">+ Add another booking</button>
+    <button type="button" id="save-btn">Save All Bookings</button>
+  </form>
+
+<script>
+const SUPABASE_URL = "https://mtwqxatcdegdussnbtpx.supabase.co";
+const SUPABASE_KEY = "sb_publishable_yT1eTaSfyU9__Jw9oKyKJA_ONEcFGiQ";
+const REST_URL = SUPABASE_URL + "/rest/v1/library_bookings";
+const HEADERS = {
+  "apikey": SUPABASE_KEY,
+  "Authorization": "Bearer " + SUPABASE_KEY,
+  "Content-Type": "application/json",
+};
+
+let bookings = [];
+let nextTempId = 0;
+
+function to12h(hhmm) {
+  const [h, m] = hhmm.split(":").map(Number);
+  const period = h >= 12 ? "PM" : "AM";
+  let h12 = h % 12; if (h12 === 0) h12 = 12;
+  return String(h12).padStart(2, "0") + ":" + String(m).padStart(2, "0") + " " + period;
+}
+function to24h(hhmmAmPm) {
+  const [time, period] = hhmmAmPm.trim().split(" ");
+  let [h, m] = time.split(":").map(Number);
+  if (period === "PM" && h !== 12) h += 12;
+  if (period === "AM" && h === 12) h = 0;
+  return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+}
+function todayStr() {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+}
+function fireDate(targetDateStr) {
+  const d = new Date(targetDateStr + "T00:00:00");
+  d.setDate(d.getDate() - 1);
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+}
+
+async function loadBookings() {
+  const resp = await fetch(REST_URL + "?select=*&order=target_date.asc,from_time.asc", { headers: HEADERS });
+  bookings = await resp.json();
+  render();
+}
+
+function render() {
+  renderSchedule();
+  renderRows();
+}
+
+function renderSchedule() {
+  const container = document.getElementById("schedule");
+  if (!bookings.length) {
+    container.innerHTML = '<p style="color:#777; font-size:0.9rem;">Nothing scheduled.</p>';
+    return;
+  }
+  const today = todayStr();
+  const statusColors = { success: "#1b7f3a", failed: "#b3261e", pending: "#6b6b6b" };
+  const statusLabels = { success: "Booked", failed: "Failed", pending: "Pending" };
+  const sorted = [...bookings].sort((a,b) => (a.target_date+a.from_time).localeCompare(b.target_date+b.from_time));
+
+  container.innerHTML = sorted.map(b => {
+    const isPast = b.target_date < today;
+    let timing = "";
+    if (b.status === "pending" && !isPast) {
+      const fd = fireDate(b.target_date);
+      if (fd === today) timing = '<span style="color:#b3261e; font-weight:600;">fires tonight, 12:01 AM</span>';
+      else if (fd > today) timing = "opens " + fd + ", 12:01 AM";
+      else timing = '<span style="color:#b3261e; font-weight:600;">window already opened — book manually, scheduler missed it</span>';
+    }
+    return `
+      <div class="sched-row${isPast ? ' past' : ''}" data-edit-id="${b.id}">
+        <div class="sched-date">${b.target_date}</div>
+        <div class="sched-detail">
+          <strong>${escapeHtml(b.label)}</strong> &middot; ${b.from_time}&ndash;${b.until_time} &middot; ${escapeHtml(b.room_preference)}
+          ${timing ? `<div class="timing">${timing}</div>` : ''}
+        </div>
+        <div class="sched-status" style="color:${statusColors[b.status]||'#6b6b6b'};">${statusLabels[b.status]||b.status}</div>
+        <i class="edit-hint">edit &rsaquo;</i>
+        <span class="duplicate-hint" data-dup-id="${b.id}">Duplicate</span>
+        <span class="delete-hint" data-del-id="${b.id}">Delete</span>
+      </div>`;
+  }).join("");
+
+  container.querySelectorAll("[data-edit-id]").forEach(el => {
+    el.addEventListener("click", (e) => {
+      if (e.target.closest("[data-dup-id]") || e.target.closest("[data-del-id]")) return;
+      openEdit(el.dataset.editId);
+    });
+  });
+  container.querySelectorAll("[data-dup-id]").forEach(el => {
+    el.addEventListener("click", (e) => { e.stopPropagation(); duplicateRow(el.dataset.dupId); });
+  });
+  container.querySelectorAll("[data-del-id]").forEach(el => {
+    el.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!confirm("Delete this schedule entry? This only removes it from the list here — it does not cancel a real library reservation.")) return;
+      await fetch(REST_URL + "?id=eq." + el.dataset.delId, { method: "DELETE", headers: HEADERS });
+      bookings = bookings.filter(b => b.id !== el.dataset.delId);
+      render();
+    });
+  });
+}
+
+function renderRows() {
+  const container = document.getElementById("rows");
+  container.innerHTML = bookings.map(b => rowHtml(b)).join("");
+  bindRowEvents();
+}
+
+function rowHtml(b, isNew) {
+  const statusColors = { success: "#1b7f3a", failed: "#b3261e", pending: "#6b6b6b" };
+  const statusLine = (!isNew && b.status) ? `
+    <div class="status-line">
+      Status: <span style="color:${statusColors[b.status]||'#6b6b6b'}; font-weight:600;">${b.status}</span>
+      &nbsp;&middot;&nbsp; Last run: ${b.last_run_at || 'never'}
+      ${b.last_run_note ? `<div class="note">${escapeHtml(b.last_run_note)}</div>` : ''}
+    </div>` : '';
+  return `
+    <fieldset class="row" id="edit-${b.id}" data-row-id="${b.id}">
+      <button type="button" class="remove-btn" data-remove="${b.id}">Remove</button>
+      ${statusLine}
+      <label>Label
+        <input type="text" data-field="label" data-row="${b.id}" value="${escapeHtml(b.label)}" required>
+      </label>
+      <label>Target date <span style="font-weight:400; color:#888;">(the day you want the room)</span>
+        <input type="date" data-field="target_date" data-row="${b.id}" value="${b.target_date}" required>
+      </label>
+      <label>From
+        <input type="time" data-field="from_time" data-row="${b.id}" value="${to24h(b.from_time)}" required>
+      </label>
+      <label>Until
+        <input type="time" data-field="until_time" data-row="${b.id}" value="${to24h(b.until_time)}" required>
+      </label>
+      <label>Room preference <span style="font-weight:400; color:#888;">(comma-separated, tried in order)</span>
+        <input type="text" data-field="room_preference" data-row="${b.id}" value="${escapeHtml(b.room_preference)}" required>
+      </label>
+      <label>Attendee name
+        <input type="text" data-field="attendee_name" data-row="${b.id}" value="${escapeHtml(b.attendee_name)}" required>
+      </label>
+      <label>Estimated attendance
+        <input type="number" data-field="estimated_attendance" data-row="${b.id}" value="${b.estimated_attendance}" min="1" required>
+      </label>
+    </fieldset>`;
+}
+
+function bindRowEvents() {
+  document.querySelectorAll("[data-remove]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      bookings = bookings.filter(b => String(b.id) !== btn.dataset.remove);
+      renderRows();
+    });
+  });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function openEdit(id) {
+  document.querySelectorAll("fieldset.row").forEach(f => f.classList.remove("target"));
+  const el = document.getElementById("edit-" + id);
+  if (el) {
+    el.classList.add("target");
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}
+
+document.getElementById("add-row").addEventListener("click", () => {
+  const id = "new" + (nextTempId++);
+  bookings.push({
+    id, label: "New booking", target_date: "", from_time: "10:00 AM", until_time: "12:00 PM",
+    room_preference: "Linkpod 2, Linkpod 1", attendee_name: "Larry", estimated_attendance: 1,
+    status: null, last_run_at: null, last_run_note: null,
+  });
+  renderRows();
+  const el = document.getElementById("edit-" + id);
+  el.classList.add("expanded");
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+});
+
+function duplicateRow(sourceId) {
+  const source = bookings.find(b => String(b.id) === String(sourceId));
+  if (!source) return;
+  const id = "dup" + (nextTempId++);
+  bookings.push({
+    ...source, id, target_date: "", status: null, last_run_at: null, last_run_note: null,
+  });
+  renderRows();
+  const el = document.getElementById("edit-" + id);
+  el.classList.add("expanded");
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+document.getElementById("save-btn").addEventListener("click", async () => {
+  const flash = document.getElementById("flash");
+  flash.innerHTML = "";
+  try {
+    // Read current form values back into `bookings` before saving.
+    document.querySelectorAll("fieldset.row").forEach(fs => {
+      const rowId = fs.dataset.rowId;
+      const b = bookings.find(x => String(x.id) === String(rowId));
+      if (!b) return;
+      fs.querySelectorAll("[data-field]").forEach(input => {
+        const field = input.dataset.field;
+        if (field === "from_time" || field === "until_time") {
+          b[field] = to12h(input.value);
+        } else if (field === "estimated_attendance") {
+          b[field] = parseInt(input.value, 10);
+        } else {
+          b[field] = input.value;
+        }
+      });
+    });
+
+    let resetCount = 0, keptCount = 0;
+    for (const b of bookings) {
+      const isNewRow = typeof b.id === "string" && (b.id.startsWith("new") || b.id.startsWith("dup"));
+      const payload = {
+        label: b.label, target_date: b.target_date, from_time: b.from_time, until_time: b.until_time,
+        room_preference: b.room_preference, attendee_name: b.attendee_name,
+        estimated_attendance: b.estimated_attendance,
+      };
+      if (isNewRow) {
+        payload.status = "pending"; payload.last_run_at = null; payload.last_run_note = null;
+        const resp = await fetch(REST_URL, { method: "POST", headers: {...HEADERS, "Prefer": "return=representation"}, body: JSON.stringify(payload) });
+        const created = await resp.json();
+        b.id = created[0].id;
+        resetCount++;
+      } else {
+        await fetch(REST_URL + "?id=eq." + b.id, { method: "PATCH", headers: HEADERS, body: JSON.stringify(payload) });
+        keptCount++;
+      }
+    }
+    flash.innerHTML = `<div class="flash">Saved. ${resetCount} new booking(s) added, ${keptCount} existing entry/entries updated.</div>`;
+    await loadBookings();
+  } catch (err) {
+    flash.innerHTML = `<div class="error-flash">Save failed: ${escapeHtml(err.message)}</div>`;
+  }
+});
+
+loadBookings();
+</script>
+</body>
+</html>

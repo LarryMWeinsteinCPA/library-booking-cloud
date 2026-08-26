@@ -1,0 +1,38 @@
+name: Nightly library booking check
+
+on:
+  schedule:
+    # 00:01 AM Central time. GitHub Actions cron is UTC-only and does not auto-adjust for
+    # Daylight Saving Time. This is currently set for CDT (UTC-5). When Central time switches
+    # to CST (typically early November) or back to CDT (typically mid-March), update the "5"
+    # below to "6" (CST) or back to "5" (CDT) — see README.md for the full explanation.
+    - cron: "1 5 * * *"
+  workflow_dispatch: {}  # allows manually triggering a run from the Actions tab, for testing
+
+concurrency:
+  group: nightly-booking-run
+  cancel-in-progress: false
+
+jobs:
+  run-booking-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run booking check
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          LIBRARY_CARD_NUMBER: ${{ secrets.LIBRARY_CARD_NUMBER }}
+          LIBRARY_PIN: ${{ secrets.LIBRARY_PIN }}
+        run: python booking_automation.py
