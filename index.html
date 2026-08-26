@@ -89,6 +89,10 @@ function fireDate(targetDateStr) {
   d.setDate(d.getDate() - 1);
   return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
 }
+function dayOfWeek(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  return d.toLocaleDateString("en-US", { weekday: "short" });
+}
 
 async function loadBookings() {
   const resp = await fetch(REST_URL + "?select=*&order=target_date.asc,from_time.asc", { headers: HEADERS });
@@ -123,7 +127,7 @@ function renderSchedule() {
     }
     return `
       <div class="sched-row${isPast ? ' past' : ''}" data-edit-id="${b.id}">
-        <div class="sched-date">${b.target_date}</div>
+        <div class="sched-date">${b.target_date}<br><span style="font-weight:400; font-size:0.75rem; color:#888;">${dayOfWeek(b.target_date)}</span></div>
         <div class="sched-detail">
           <strong>${escapeHtml(b.label)}</strong> &middot; ${b.from_time}&ndash;${b.until_time} &middot; ${escapeHtml(b.room_preference)}
           ${timing ? `<div class="timing">${timing}</div>` : ''}
