@@ -1,21 +1,21 @@
 name: Nightly library booking check
 
 on:
+  # Every 5 minutes, all day, every day — GitHub's shortest allowed interval. This replaces
+  # trying to hit an exact minute (e.g. 12:01 AM), which GitHub explicitly documents as
+  # best-effort and NOT guaranteed — in practice it has both run late (by 22 minutes) and, once,
+  # not run at all. Running this frequently means no single missed/delayed trigger matters: the
+  # next check 5 minutes later catches it. It also means Daylight Saving Time no longer needs a
+  # twice-yearly manual edit, since there's no specific hour to get wrong anymore.
+  #
+  # This is safe and cheap: booking_automation.py's --check-only mode (below) does a lightweight
+  # Supabase read and exits in ~1-2 seconds when nothing is due — which is true for the
+  # overwhelming majority of these runs — without ever installing or launching a browser. Only
+  # the rare run that actually finds something due pays the cost of installing Chromium and
+  # doing the real booking flow. Each individual booking still only gets ONE real attempt per
+  # day regardless of how many times this fires (enforced in booking_automation.py).
   schedule:
-    # 00:01 AM and 00:03 AM Central time. Two triggers, two minutes apart, because GitHub
-    # explicitly documents that scheduled workflows can be delayed — and the top of the hour
-    # (:00/:01) is their worst-case congestion window, since that's when the most cron jobs
-    # across all of GitHub fire at once. The 00:01 run is the primary attempt; 00:03 is a safety
-    # net. This is safe to run twice: the script skips anything already marked "success", so a
-    # second on-time trigger is a harmless no-op, and a second trigger only does real work if
-    # the first one got delayed or dropped.
-    #
-    # GitHub Actions cron is UTC-only and does not auto-adjust for Daylight Saving Time. Both
-    # lines below are currently set for CDT (UTC-5). When Central time switches to CST
-    # (typically early November) or back to CDT (typically mid-March), update the "5" in BOTH
-    # lines to "6" (CST) or back to "5" (CDT) — see README.md for the full explanation.
-    - cron: "1 5 * * *"
-    - cron: "3 5 * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}  # allows manually triggering a run from the Actions tab, for testing
 
 concurrency:
@@ -33,12 +33,24 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          playwright install --with-deps chromium
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check whether anything is due
+        id: check
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          LIBRARY_CARD_NUMBER: ${{ secrets.LIBRARY_CARD_NUMBER }}
+          LIBRARY_PIN: ${{ secrets.LIBRARY_PIN }}
+        run: python booking_automation.py --check-only >> "$GITHUB_OUTPUT"
+
+      - name: Install Chromium (only if something is actually due)
+        if: steps.check.outputs.actionable == 'true'
+        run: playwright install --with-deps chromium
 
       - name: Run booking check
+        if: steps.check.outputs.actionable == 'true'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}

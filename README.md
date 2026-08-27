@@ -8,29 +8,25 @@ Secrets.
 - **Automation**: `.github/workflows/nightly.yml`, a scheduled GitHub Actions workflow
 - **Data**: Supabase table `library_bookings` (project: LW CPA Apps)
 
-## Daylight Saving Time
+## Why it runs every 5 minutes, all day
 
-GitHub Actions cron schedules are UTC-only and do not auto-adjust for DST. The workflow has
-**two** scheduled triggers (00:01 and 00:03 AM Central — see "Two scheduled triggers" below),
-both currently set for **Central Daylight Time (CDT, UTC-5)**. When Central time changes, both
-lines need the same edit:
+GitHub explicitly documents that scheduled workflow triggers are best-effort, not precise — and
+specifically calls out the top of the hour (like 12:00/12:01 AM) as their worst congestion
+window. In practice this bit us twice: the very first scheduled run fired 22 minutes late, and
+the night after that, it didn't fire at all.
 
-- **Fall back to CST (UTC-6)**, typically early November: edit `.github/workflows/nightly.yml`,
-  change both `cron: "1 5 * * *"` → `"1 6 * * *"` and `cron: "3 5 * * *"` → `"3 6 * * *"`.
-- **Spring forward to CDT (UTC-5)**, typically mid-March: change both back to `"1 5 * * *"` and
-  `"3 5 * * *"`.
+Rather than try to out-guess GitHub's scheduler by picking a "safer" minute, the workflow just
+runs every 5 minutes, all day, every day (GitHub's shortest allowed interval). This means no
+single missed or delayed trigger can cause a real miss — the next check 5 minutes later catches
+it. It's also free (GitHub Actions minutes are unlimited on public repos) and cheap in practice:
+`booking_automation.py --check-only` does a lightweight Supabase read and exits in a couple of
+seconds when nothing is due, which is true for the vast majority of these runs — Chromium only
+gets installed and a real browser only gets launched on the rare run that actually has a booking
+to attempt. Each booking still only gets one real attempt per day no matter how many times the
+check runs (enforced in the script, not just by the schedule).
 
-Commit and push the change — no other steps needed.
-
-## Two scheduled triggers
-
-GitHub documents that scheduled workflows can be delayed, and calls out the top of the hour as
-the worst-case congestion window — exactly where a 00:01 AM trigger sits. So the workflow fires
-twice, two minutes apart (00:01 and 00:03 Central), as a safety net. This is safe: the script
-skips any booking already marked `"success"`, so if the first trigger ran fine, the second is a
-harmless no-op. It only does real work if the first one got delayed or dropped — which is exactly
-what happened the first night this went live (00:01 didn't fire for ~18 minutes; a manual trigger
-was used that night before this backup schedule existed).
+**Bonus:** this also eliminates the twice-yearly Daylight Saving Time cron edit that a
+specific-hour schedule would have needed — there's no particular hour to get wrong anymore.
 
 ## Testing
 

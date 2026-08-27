@@ -240,13 +240,20 @@ def process_booking(browser, booking: dict, today_str: str) -> None:
         log(f"[{label}] status already 'success' — skipping (safety check).")
         return
 
+    # This check now runs every 5 minutes (see nightly.yml), so it's essential that a booking
+    # only gets ONE real attempt per day even if that attempt failed (e.g. room genuinely
+    # unavailable) — otherwise a failure would get silently retried every 5 minutes for the rest
+    # of the day, hammering the real site and violating the one-attempt-per-run rule.
+    last_run_at = booking.get("last_run_at")
+    if last_run_at and last_run_at[:10] == today_str:
+        log(f"[{label}] already attempted today ({last_run_at}) — skipping (no same-day retries).")
+        return
+
     target_date = datetime.strptime(booking["target_date"], "%Y-%m-%d").date()
     fire_date = target_date - timedelta(days=1)
     fire_date_str = fire_date.isoformat()
 
     if fire_date_str != today_str:
-        log(f"[{label}] target_date {booking['target_date']} opens for booking on {fire_date_str} "
-            f"(1 day ahead) — today is {today_str} — skipping.")
         return
 
     log(f"[{label}] Today ({today_str}) is the day before target_date {booking['target_date']} — "
@@ -268,17 +275,41 @@ def process_booking(browser, booking: dict, today_str: str) -> None:
         context.close()
 
 
-def main():
-    today_str = datetime.now(CENTRAL_TZ).strftime("%Y-%m-%d")
-    log(f"=== Run started (today = {today_str} Central) ===")
+def is_actionable(booking: dict, today_str: str) -> bool:
+    if booking.get("status") == "success":
+        return False
+    last_run_at = booking.get("last_run_at")
+    if last_run_at and last_run_at[:10] == today_str:
+        return False
+    target_date = datetime.strptime(booking["target_date"], "%Y-%m-%d").date()
+    fire_date = target_date - timedelta(days=1)
+    return fire_date.isoformat() == today_str
 
+
+def main(check_only: bool = False):
+    # Runs every 5 minutes (see nightly.yml) so GitHub's own schedule-trigger imprecision can
+    # never cause a missed window — but that means the overwhelming majority of runs (~99%) have
+    # nothing to do. Check that cheaply via the Supabase fetch alone, and only pay the cost of
+    # installing/launching a real browser on the rare run that actually has a booking to attempt
+    # (see --check-only below, used by nightly.yml to decide whether to even install Chromium).
+    today_str = datetime.now(CENTRAL_TZ).strftime("%Y-%m-%d")
     bookings = fetch_bookings()
-    log(f"Fetched {len(bookings)} booking row(s) from Supabase.")
+    actionable = [b for b in bookings if is_actionable(b, today_str)]
+
+    if check_only:
+        print(f"actionable={'true' if actionable else 'false'}")
+        return
+
+    if not actionable:
+        return
+
+    log(f"=== Run started (today = {today_str} Central) ===")
+    log(f"Fetched {len(bookings)} booking row(s) from Supabase — {len(actionable)} actionable.")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
-            for booking in bookings:
+            for booking in actionable:
                 process_booking(browser, booking, today_str)
         finally:
             browser.close()
@@ -287,4 +318,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(check_only="--check-only" in sys.argv)
