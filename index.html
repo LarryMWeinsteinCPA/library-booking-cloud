@@ -105,6 +105,12 @@ function render() {
   renderRows();
 }
 
+function extractBookedRoom(note) {
+  if (!note) return null;
+  const m = note.match(/Booked '([^']+)'/);
+  return m ? m[1] : null;
+}
+
 function renderSchedule() {
   const container = document.getElementById("schedule");
   if (!bookings.length) {
@@ -125,11 +131,15 @@ function renderSchedule() {
       else if (fd > today) timing = "opens " + fd + ", 12:01 AM";
       else timing = '<span style="color:#b3261e; font-weight:600;">window already opened — book manually, scheduler missed it</span>';
     }
+    const bookedRoom = b.status === "success" ? extractBookedRoom(b.last_run_note) : null;
+    const roomDisplay = bookedRoom
+      ? `<strong style="color:#1b7f3a;">${escapeHtml(bookedRoom)}</strong> booked`
+      : escapeHtml(b.room_preference);
     return `
       <div class="sched-row${isPast ? ' past' : ''}" data-edit-id="${b.id}">
         <div class="sched-date">${b.target_date}<br><span style="font-weight:400; font-size:0.75rem; color:#888;">${dayOfWeek(b.target_date)}</span></div>
         <div class="sched-detail">
-          <strong>${escapeHtml(b.label)}</strong> &middot; ${b.from_time}&ndash;${b.until_time} &middot; ${escapeHtml(b.room_preference)}
+          <strong>${escapeHtml(b.label)}</strong> &middot; ${b.from_time}&ndash;${b.until_time} &middot; ${roomDisplay}
           ${timing ? `<div class="timing">${timing}</div>` : ''}
         </div>
         <div class="sched-status" style="color:${statusColors[b.status]||'#6b6b6b'};">${statusLabels[b.status]||b.status}</div>
