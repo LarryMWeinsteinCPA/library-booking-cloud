@@ -8,30 +8,32 @@ Secrets.
 - **Automation**: `.github/workflows/nightly.yml`, a scheduled GitHub Actions workflow
 - **Data**: Supabase table `library_bookings` (project: LW CPA Apps)
 
-## Why it runs every 5 minutes, all day
+## Why an external scheduler (cron-job.org), not GitHub's own `schedule:` trigger
 
-GitHub explicitly documents that scheduled workflow triggers are best-effort, not precise — and
-specifically calls out the top of the hour (like 12:00/12:01 AM) as their worst congestion
-window. In practice this bit us twice: the very first scheduled run fired 22 minutes late, and
-the night after that, it didn't fire at all.
+GitHub's `schedule:` trigger is documented as best-effort, not precise. We tried it at several
+intervals, ending with every 5 minutes all day. It initially looked fine, but a two-week gap
+analysis of actual run timestamps (Aug 26 – Sep 8) showed it was *never* really running every 5
+minutes — real gaps between runs were consistently 2-5+ hours, every single night. That silently
+caused a missed booking window on 2026-09-08: the check that should have caught a newly-opened
+slot didn't run until 4:44 AM, by which time the rooms were already taken.
 
-Rather than try to out-guess GitHub's scheduler by picking a "safer" minute, the workflow just
-runs every 5 minutes, all day, every day (GitHub's shortest allowed interval). This means no
-single missed or delayed trigger can cause a real miss — the next check 5 minutes later catches
-it. It's also free (GitHub Actions minutes are unlimited on public repos) and cheap in practice:
-`booking_automation.py --check-only` does a lightweight Supabase read and exits in a couple of
-seconds when nothing is due, which is true for the vast majority of these runs — Chromium only
-gets installed and a real browser only gets launched on the rare run that actually has a booking
-to attempt. Each booking still only gets one real attempt per day no matter how many times the
-check runs (enforced in the script, not just by the schedule).
+The fix: a free external cron service, [cron-job.org](https://cron-job.org), calls this
+workflow's `workflow_dispatch` API endpoint directly — every 5 minutes, 12:01-2:56 AM, in the
+`America/Chicago` timezone. Because the job is scheduled in that named timezone rather than UTC,
+it also self-adjusts for Daylight Saving Time automatically — no twice-yearly manual edit needed.
 
-**Bonus:** this also eliminates the twice-yearly Daylight Saving Time cron edit that a
-specific-hour schedule would have needed — there's no particular hour to get wrong anymore.
+The workflow itself stays cheap regardless of trigger source: `booking_automation.py
+--check-only` does a lightweight Supabase read and exits in a couple of seconds when nothing is
+due, which is true for the vast majority of runs — Chromium only gets installed and a real
+browser only gets launched on the rare run that actually has a booking to attempt. Each booking
+still only gets one real attempt per day no matter how many times the check runs (enforced in
+the script itself).
 
 ## Testing
 
 Go to the repo's **Actions** tab → **"Nightly library booking check"** → **"Run workflow"** to
-trigger it manually anytime, without waiting for the schedule.
+trigger it manually anytime. cron-job.org's dashboard (cron-job.org → your account → this job)
+also shows execution history and lets you trigger a test run from there.
 
 ## Security notes
 
