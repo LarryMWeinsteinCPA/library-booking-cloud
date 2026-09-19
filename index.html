@@ -280,6 +280,12 @@ document.getElementById("save-btn").addEventListener("click", async () => {
       });
     });
 
+    for (const b of bookings) {
+      if (!b.target_date || !b.from_time || !b.until_time || Number.isNaN(b.estimated_attendance)) {
+        throw new Error("\"" + (b.label || "A booking") + "\" is missing a date or time. Click edit on it, fill in the Target date, or click Remove.");
+      }
+    }
+
     let resetCount = 0, keptCount = 0;
     for (const b of bookings) {
       const isNewRow = typeof b.id === "string" && (b.id.startsWith("new") || b.id.startsWith("dup"));
@@ -292,10 +298,12 @@ document.getElementById("save-btn").addEventListener("click", async () => {
         payload.status = "pending"; payload.last_run_at = null; payload.last_run_note = null;
         const resp = await fetch(REST_URL, { method: "POST", headers: {...HEADERS, "Prefer": "return=representation"}, body: JSON.stringify(payload) });
         const created = await resp.json();
+        if (!resp.ok) throw new Error(created.message || "Could not add booking (HTTP " + resp.status + ")");
         b.id = created[0].id;
         resetCount++;
       } else {
-        await fetch(REST_URL + "?id=eq." + b.id, { method: "PATCH", headers: HEADERS, body: JSON.stringify(payload) });
+        const presp = await fetch(REST_URL + "?id=eq." + b.id, { method: "PATCH", headers: HEADERS, body: JSON.stringify(payload) });
+        if (!presp.ok) { const e = await presp.json().catch(() => ({})); throw new Error(e.message || "Could not update booking (HTTP " + presp.status + ")"); }
         keptCount++;
       }
     }
