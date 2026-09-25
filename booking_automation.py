@@ -117,53 +117,75 @@ class BookingFailed(Exception):
     pass
 
 
+# When the booking window first opens (midnight), a popular room can get claimed by someone else
+# within seconds. Rather than give up on the first look, re-run the search across the first few
+# minutes of the window — 12 attempts, 15 seconds apart (~3 minutes total), before concluding the
+# room is genuinely unavailable. Each booking still only gets ONE real attempt per day overall
+# (enforced in process_booking) — this retry loop lives entirely inside that single attempt.
+MAX_SEARCH_ATTEMPTS = 12
+SEARCH_RETRY_DELAY_MS = 15000
+
+
 def run_booking(page, booking: dict, date_tag: str) -> str:
     label = booking["label"]
-
-    log(f"  [{label}] Navigating to search page")
-    page.goto(BASE_URL, wait_until="load")
-
-    if page_has_captcha(page):
-        raise BookingFailed("CAPTCHA detected on search page — stopping (no auto-solve).")
-
-    page.select_option("#s-lc-group", STUDY_ROOM_GROUP_VALUE)
-    page.select_option("#s-lc-type", CAPACITY_1_2_VALUE)
-    page.fill("#s-lc-date", booking["target_date"])
-    page.fill("#s-lc-time-start", to_24h(booking["from_time"]))
-    page.fill("#s-lc-time-end", to_24h(booking["until_time"]))
-
-    log(f"  [{label}] Searching: {booking['target_date']} {booking['from_time']}-{booking['until_time']}")
-    page.click("#s-lc-go")
-    page.wait_for_load_state("load")
-    page.wait_for_selector("#s-lc-eq-search-results", timeout=15000)
-
-    if page_has_captcha(page):
-        raise BookingFailed("CAPTCHA detected on results page — stopping (no auto-solve).")
-
-    suggestions = page.query_selector_all("#s-lc-eq-search-results .s-lc-booking-suggestion")
-    room_names = []
-    suggestion_by_name = {}
-    for suggestion in suggestions:
-        heading = suggestion.query_selector(".s-lc-suggestion-heading")
-        name = heading.inner_text().strip() if heading else ""
-        room_names.append(name)
-        if name.lower() not in suggestion_by_name:
-            suggestion_by_name[name.lower()] = (suggestion, name)
-
     preferences = [p.strip() for p in booking["room_preference"].split(",") if p.strip()]
+
     target_suggestion = None
     matched_name = None
-    for pref in preferences:
-        hit = suggestion_by_name.get(pref.lower())
-        if hit:
-            target_suggestion, matched_name = hit
+    room_names = []
+
+    for attempt in range(1, MAX_SEARCH_ATTEMPTS + 1):
+        log(f"  [{label}] Navigating to search page (attempt {attempt}/{MAX_SEARCH_ATTEMPTS})")
+        page.goto(BASE_URL, wait_until="load")
+
+        if page_has_captcha(page):
+            raise BookingFailed("CAPTCHA detected on search page — stopping (no auto-solve).")
+
+        page.select_option("#s-lc-group", STUDY_ROOM_GROUP_VALUE)
+        page.select_option("#s-lc-type", CAPACITY_1_2_VALUE)
+        page.fill("#s-lc-date", booking["target_date"])
+        page.fill("#s-lc-time-start", to_24h(booking["from_time"]))
+        page.fill("#s-lc-time-end", to_24h(booking["until_time"]))
+
+        log(f"  [{label}] Searching: {booking['target_date']} {booking['from_time']}-{booking['until_time']}")
+        page.click("#s-lc-go")
+        page.wait_for_load_state("load")
+        page.wait_for_selector("#s-lc-eq-search-results", timeout=15000)
+
+        if page_has_captcha(page):
+            raise BookingFailed("CAPTCHA detected on results page — stopping (no auto-solve).")
+
+        suggestions = page.query_selector_all("#s-lc-eq-search-results .s-lc-booking-suggestion")
+        room_names = []
+        suggestion_by_name = {}
+        for suggestion in suggestions:
+            heading = suggestion.query_selector(".s-lc-suggestion-heading")
+            name = heading.inner_text().strip() if heading else ""
+            room_names.append(name)
+            if name.lower() not in suggestion_by_name:
+                suggestion_by_name[name.lower()] = (suggestion, name)
+
+        for pref in preferences:
+            hit = suggestion_by_name.get(pref.lower())
+            if hit:
+                target_suggestion, matched_name = hit
+                break
+
+        if target_suggestion is not None:
             break
+
+        if attempt < MAX_SEARCH_ATTEMPTS:
+            log(f"  [{label}] No preferred room available on attempt {attempt} — "
+                f"retrying in {SEARCH_RETRY_DELAY_MS // 1000}s")
+            page.wait_for_timeout(SEARCH_RETRY_DELAY_MS)
 
     if target_suggestion is None:
         available = ", ".join(room_names) if room_names else "(no rooms available at all for this search)"
+        minutes = MAX_SEARCH_ATTEMPTS * SEARCH_RETRY_DELAY_MS // 60000
         raise BookingFailed(
-            f"None of the preferred rooms ({', '.join(preferences)}) were available. "
-            f"Available rooms for this search: {available}. No other substitute room was booked."
+            f"None of the preferred rooms ({', '.join(preferences)}) were available after "
+            f"{MAX_SEARCH_ATTEMPTS} attempts over ~{minutes} minutes. "
+            f"Available rooms for last search: {available}. No other substitute room was booked."
         )
 
     log(f"  [{label}] '{matched_name}' is available — clicking Book Now")
