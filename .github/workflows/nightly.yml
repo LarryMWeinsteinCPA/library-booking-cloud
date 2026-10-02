@@ -17,7 +17,12 @@ on:
   # browser. Only the rare run that actually finds something due pays the cost of installing
   # Chromium and doing the real booking flow. Each individual booking still only gets ONE real
   # attempt per day regardless of how many times this fires (enforced in booking_automation.py).
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      booking_id:
+        description: "Optional: attempt only this booking right now (used by the editor page's Try now button)"
+        required: false
+        default: ""
 
 concurrency:
   group: nightly-booking-run
@@ -44,6 +49,7 @@ jobs:
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           LIBRARY_CARD_NUMBER: ${{ secrets.LIBRARY_CARD_NUMBER }}
           LIBRARY_PIN: ${{ secrets.LIBRARY_PIN }}
+          BOOKING_ID: ${{ inputs.booking_id }}
         run: python booking_automation.py --check-only >> "$GITHUB_OUTPUT"
 
       - name: Install Chromium (only if something is actually due)
@@ -57,4 +63,5 @@ jobs:
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           LIBRARY_CARD_NUMBER: ${{ secrets.LIBRARY_CARD_NUMBER }}
           LIBRARY_PIN: ${{ secrets.LIBRARY_PIN }}
+          BOOKING_ID: ${{ inputs.booking_id }}
         run: python booking_automation.py

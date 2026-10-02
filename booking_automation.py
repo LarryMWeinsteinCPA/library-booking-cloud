@@ -28,6 +28,10 @@ SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
 SUPABASE_KEY = os.environ["SUPABASE_ANON_KEY"]
 LIBRARY_CARD_NUMBER = os.environ["LIBRARY_CARD_NUMBER"]
 LIBRARY_PIN = os.environ["LIBRARY_PIN"]
+# Set only for a one-click "Try now" run triggered from the hosted editor page: attempt just this
+# one booking immediately, skipping the usual "day before the target date" timing rules.
+BOOKING_ID = os.environ.get("BOOKING_ID", "").strip()
+MANUAL_SEARCH_ATTEMPTS = 3
 
 REST_URL = f"{SUPABASE_URL}/rest/v1/library_bookings"
 SUPABASE_HEADERS = {
@@ -62,6 +66,14 @@ def fetch_bookings() -> list:
     resp = requests.get(REST_URL, headers=SUPABASE_HEADERS, params={"select": "*"}, timeout=15)
     resp.raise_for_status()
     return resp.json()
+
+
+def update_note_only(row_id: str, note: str) -> None:
+    resp = requests.patch(
+        REST_URL, headers=SUPABASE_HEADERS, params={"id": f"eq.{row_id}"},
+        json={"last_run_note": note}, timeout=15,
+    )
+    resp.raise_for_status()
 
 
 def update_booking(row_id: str, status: str, note: str) -> None:
@@ -143,7 +155,7 @@ SEARCH_RETRY_DELAY_MS = 15000
 SEARCH_TIME_OFFSETS_MINUTES = [0, -15, 15]
 
 
-def run_booking(page, booking: dict, date_tag: str) -> str:
+def run_booking(page, booking: dict, date_tag: str, max_attempts: int = MAX_SEARCH_ATTEMPTS) -> str:
     label = booking["label"]
     preferences = [p.strip() for p in booking["room_preference"].split(",") if p.strip()]
     requested_start = to_24h(booking["from_time"])
@@ -154,12 +166,12 @@ def run_booking(page, booking: dict, date_tag: str) -> str:
     matched_start = matched_end = None
     room_names = []
 
-    for attempt in range(1, MAX_SEARCH_ATTEMPTS + 1):
+    for attempt in range(1, max_attempts + 1):
         for offset in SEARCH_TIME_OFFSETS_MINUTES:
             search_start = shift_hhmm(requested_start, offset)
             search_end = shift_hhmm(requested_end, offset)
 
-            log(f"  [{label}] Navigating to search page (attempt {attempt}/{MAX_SEARCH_ATTEMPTS}, "
+            log(f"  [{label}] Navigating to search page (attempt {attempt}/{max_attempts}, "
                 f"offset {offset:+d}min)")
             page.goto(BASE_URL, wait_until="load")
 
@@ -203,17 +215,17 @@ def run_booking(page, booking: dict, date_tag: str) -> str:
         if target_suggestion is not None:
             break
 
-        if attempt < MAX_SEARCH_ATTEMPTS:
+        if attempt < max_attempts:
             log(f"  [{label}] No preferred room available on attempt {attempt} (tried requested "
                 f"time and ±15min) — retrying in {SEARCH_RETRY_DELAY_MS // 1000}s")
             page.wait_for_timeout(SEARCH_RETRY_DELAY_MS)
 
     if target_suggestion is None:
         available = ", ".join(room_names) if room_names else "(no rooms available at all for this search)"
-        minutes = MAX_SEARCH_ATTEMPTS * SEARCH_RETRY_DELAY_MS // 60000
+        minutes = max(1, max_attempts * SEARCH_RETRY_DELAY_MS // 60000)
         raise BookingFailed(
             f"None of the preferred rooms ({', '.join(preferences)}) were available at the requested "
-            f"time or ±15 minutes, after {MAX_SEARCH_ATTEMPTS} attempts over ~{minutes} minutes. "
+            f"time or ±15 minutes, after {max_attempts} attempts over ~{minutes} minutes. "
             f"Available rooms for last search: {available}. No other substitute room was booked."
         )
 
@@ -288,7 +300,7 @@ def run_booking(page, booking: dict, date_tag: str) -> str:
     return f"Booked '{matched_name}' for {booking['target_date']} {booked_time}{shift_note}."
 
 
-def process_booking(browser, booking: dict, today_str: str) -> None:
+def process_booking(browser, booking: dict, today_str: str, manual: bool = False) -> None:
     label = booking["label"]
 
     if booking.get("status") == "success":
@@ -299,31 +311,46 @@ def process_booking(browser, booking: dict, today_str: str) -> None:
     # only gets ONE real attempt per day even if that attempt failed (e.g. room genuinely
     # unavailable) — otherwise a failure would get silently retried every 5 minutes for the rest
     # of the day, hammering the real site and violating the one-attempt-per-run rule.
-    last_run_at = booking.get("last_run_at")
-    if last_run_at and last_run_at[:10] == today_str:
-        log(f"[{label}] already attempted today ({last_run_at}) — skipping (no same-day retries).")
-        return
+    if not manual:
+        last_run_at = booking.get("last_run_at")
+        if last_run_at and last_run_at[:10] == today_str:
+            log(f"[{label}] already attempted today ({last_run_at}) — skipping (no same-day retries).")
+            return
 
-    target_date = datetime.strptime(booking["target_date"], "%Y-%m-%d").date()
-    fire_date = target_date - timedelta(days=1)
-    fire_date_str = fire_date.isoformat()
+        target_date = datetime.strptime(booking["target_date"], "%Y-%m-%d").date()
+        fire_date = target_date - timedelta(days=1)
+        fire_date_str = fire_date.isoformat()
 
-    if fire_date_str != today_str:
-        return
+        if fire_date_str != today_str:
+            return
 
-    log(f"[{label}] Today ({today_str}) is the day before target_date {booking['target_date']} — "
-        f"the booking window just opened. Running booking flow.")
+        log(f"[{label}] Today ({today_str}) is the day before target_date {booking['target_date']} — "
+            f"the booking window just opened. Running booking flow.")
+        max_attempts = MAX_SEARCH_ATTEMPTS
+    else:
+        log(f"[{label}] Manual 'Try now' request for target_date {booking['target_date']} — "
+            f"attempting immediately.")
+        max_attempts = MANUAL_SEARCH_ATTEMPTS
+
+    def record_failure(note: str) -> None:
+        # A failed manual try must not consume the booking's one automatic attempt at midnight, so
+        # it only leaves a note — status and last_run_at stay untouched.
+        if manual:
+            update_note_only(booking["id"], "Manual try: " + note)
+        else:
+            update_booking(booking["id"], "failed", note)
+
     context = browser.new_context()
     page = context.new_page()
     try:
-        note = run_booking(page, booking, today_str)
+        note = run_booking(page, booking, today_str, max_attempts)
         update_booking(booking["id"], "success", note)
         log(f"[{label}] SUCCESS — {note}")
     except BookingFailed as e:
-        update_booking(booking["id"], "failed", str(e))
+        record_failure(str(e))
         log(f"[{label}] FAILED — {e}")
     except Exception as e:
-        update_booking(booking["id"], "failed", f"Unexpected error: {e}")
+        record_failure(f"Unexpected error: {e}")
         log(f"[{label}] FAILED (unexpected error) — {e}")
         log("  " + traceback.format_exc().replace("\n", "\n  "))
     finally:
@@ -349,7 +376,10 @@ def main(check_only: bool = False):
     # (see --check-only below, used by nightly.yml to decide whether to even install Chromium).
     today_str = datetime.now(CENTRAL_TZ).strftime("%Y-%m-%d")
     bookings = fetch_bookings()
-    actionable = [b for b in bookings if is_actionable(b, today_str)]
+    if BOOKING_ID:
+        actionable = [b for b in bookings if b["id"] == BOOKING_ID and b.get("status") != "success"]
+    else:
+        actionable = [b for b in bookings if is_actionable(b, today_str)]
 
     if check_only:
         print(f"actionable={'true' if actionable else 'false'}")
@@ -365,7 +395,7 @@ def main(check_only: bool = False):
         browser = p.chromium.launch(headless=True)
         try:
             for booking in actionable:
-                process_booking(browser, booking, today_str)
+                process_booking(browser, booking, today_str, manual=bool(BOOKING_ID))
         finally:
             browser.close()
 
