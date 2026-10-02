@@ -222,10 +222,11 @@ def run_booking(page, booking: dict, date_tag: str, max_attempts: int = MAX_SEAR
 
     if target_suggestion is None:
         available = ", ".join(room_names) if room_names else "(no rooms available at all for this search)"
-        minutes = max(1, max_attempts * SEARCH_RETRY_DELAY_MS // 60000)
+        seconds = (max_attempts - 1) * SEARCH_RETRY_DELAY_MS // 1000
+        duration = f"~{seconds // 60} minutes" if seconds >= 120 else f"~{seconds} seconds"
         raise BookingFailed(
             f"None of the preferred rooms ({', '.join(preferences)}) were available at the requested "
-            f"time or ±15 minutes, after {max_attempts} attempts over ~{minutes} minutes. "
+            f"time or ±15 minutes, after {max_attempts} attempts over {duration}. "
             f"Available rooms for last search: {available}. No other substitute room was booked."
         )
 
